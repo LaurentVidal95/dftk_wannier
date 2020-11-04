@@ -1,14 +1,65 @@
-# using DFTK
+using DFTK            #used for gaussian_superposition function
 using ProgressMeter
 using LinearAlgebra
 
 
-########################################################
-#                                                      #
-##### ### #            UTILS                 # ### #####
-#                                                      #
-########################################################
+######!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!######
+###!!!!!!! !! !! !  !                                      !  ! !! !! !!!!!!!###
+##!!! !! !  !                      READ FILE                       !  ! !! !!!##
+###!!!!!!! !! !! !  !                                      !  ! !! !! !!!!!!!###
+######!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!######
 
+
+@views function read_nnkp_file(prefix,ψ)
+
+    ############ #### #  #             Read file              #  # #### ############
+    
+    file = open("$prefix.nnkp")
+    @info "Reading nnkp file", file
+    ln = [string(l) for l in eachline(file)]
+    close(file)
+
+
+    ############ #### #  #         Extract nnkp block         #  # #### ############
+
+    i_nn_kpts = findall(x-> endswith(x,"nnkpts"),ln) #Indices of the first and last line of the nnkpts block
+    @assert only(size(i_nn_kpts)) == 2
+    char_to_vec(line) = [parse.(Int,x) for x in split(line,' ',keepempty=false)]
+    nn_kpts =  [ char_to_vec(l) for l in ln[i_nn_kpts[1]+2:i_nn_kpts[2]-1] ]       #The block itself
+
+
+    ############ #### #  #     Extract projections block      #  # #### ############
+
+    i_projs = findall(x-> endswith(x,"projections"),ln) 
+    @assert only(size(i_projs)) == 2
+    raw_projs = [split(ln[i],' ',keepempty = false) for i in i_projs[1]+1:i_projs[2]-1]  #data in strings
+
+    #reshape so that one line gives all infos about one projection
+    n_projs = parse(Int,only(popfirst!(raw_projs)))
+    @assert(n_projs == only(size(raw_projs))/2)
+    raw_projs = reshape(raw_projs,(2,n_projs))
+
+    #PARSE in the format  g_i = [ [center],[l,mr,r],[z_axis],[x_axis], α ]
+    parsed_projs = []
+    for j in 1:n_projs
+        center = [parse(Float64,x) for x in raw_projs[1,j][1:3]]
+        quantum_numbers = [parse(Int,x) for x in raw_projs[1,j][4:end] ]
+        z_axis = [parse(Float64,x) for x in raw_projs[2,j][1:3]]
+        x_axis = [parse(Float64,x) for x in raw_projs[2,j][4:6]]
+        α = parse(Float64,raw_projs[2,j][7])
+        push!(parsed_projs, [center,quantum_numbers,z_axis,x_axis,α])
+    end
+    
+    nn_kpts,parsed_projs
+    
+end
+
+  
+######!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!######
+###!!!!!!! !! !! !  !                                      !  ! !! !! !!!!!!!###
+##!!! !! !  !                         Mmn                          !  ! !! !!!##
+###!!!!!!! !! !! !  !                                      !  ! !! !! !!!!!!!###
+######!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!######
 
 @views function get_overlap(k,kpb,ψ,pw_basis; K_shift = [0,0,0])
     
@@ -24,8 +75,6 @@ using LinearAlgebra
     Mkb = zeros(Float64,n_bands*n_bands,2) # M^{k,b}_{(mn)} for k and b = k-kpb
     accu = 0
 
-    # progress = Progress(n_bands*n_bands,desc = "Computing Mmn overlaps : ")
-
     for n in 1:n_bands
         for m in 1:n_bands
             
@@ -35,7 +84,7 @@ using LinearAlgebra
             Gk_coeffs = ψ[k][:,m] 
             Gk_vec = G_vectors(pw_basis.kpoints[k])
             Gkpb_coeffs = ψ[kpb][:,n]
-            Gkpb_vec = [ G - K_shift for G in G_vectors(pw_basis.kpoints[kpb]) ] # Don't forget the shift, see DOC of the function
+            Gkpb_vec = [ G - K_shift for G in G_vectors(pw_basis.kpoints[kpb]) ] # Don't forget the shift, see the DOC block
             
             #Compute the map of corresponding Fourier modes
             map_fourier_modes = []
@@ -57,7 +106,6 @@ using LinearAlgebra
             accu += 1
             Mkb[accu,:] = [real(ovlp),imag(ovlp)]
 
-            # next!(progress)
         end
     end
 
@@ -66,34 +114,6 @@ using LinearAlgebra
  end
 
 
-function read_nnkp_file(prefix,ψ)
-    
-    n_bands = size(ψ[1])[2]
-    
-    file = open("$prefix.nnkp")
-    @info "Reading nnkp file", file
-    ln = [string(l) for l in eachline(file)]
-    close(file)
-    
-    #Extract the nnkpts block
-    i_nn_kpts = findall(x-> endswith(x,"nnkpts"),ln) #Indices of the first and last line of the nnkpts block
-    @assert size(i_nn_kpts)[1] == 2
-    char_to_vec(line) = [parse.(Int,x) for x in split(line,' ',keepempty=false)]
-    nn_kpts =  [ char_to_vec(l) for l in ln[i_nn_kpts[1]+2:i_nn_kpts[2]-1] ]       #The block itself
-    
-    nn_kpts
-    
-end
-
-
-
-
-
-########################################################
-#                                                      #
-##### ### #          MAIN FUNCTION           # ### #####
-#                                                      #
-########################################################
 
 
 @views function generate_mmn_file(prefix,ψ,pw_basis)
@@ -130,15 +150,100 @@ end
 
 
 
+######!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!######
+###!!!!!!! !! !! !  !                                      !  ! !! !! !!!!!!!###
+##!!! !! !  !                         AMN                          !  ! !! !!!##
+###!!!!!!! !! !! !  !                                      !  ! !! !! !!!!!!!###
+######!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!######
 
 
 
-########################################################
-#                                                      #
-##### ### #            BACKUP SCF            # ### #####
-#                                                      #
-########################################################
+###!!!!!!! !! !! !  !                                      !  ! !! !! !!!!!!!###
+##!!! !! !  !               GUESS GAUSSIEN AVEC DFTK               !  ! !! !!!##
+###!!!!!!! !! !! !  !                                      !  ! !! !! !!!!!!!###
 
+
+
+
+
+
+
+
+
+
+###!!!!!!! !! !! !  !                                      !  ! !! !! !!!!!!!###
+##!!! !! !  !                CODE PERSO IN PROGRESS                !  ! !! !!!##
+###!!!!!!! !! !! !  !                                      !  ! !! !! !!!!!!!###
+
+
+
+#TODO CREER UNE CLASSE OU STRUCTURE PROJECTIONS QUI CONTIENT CES INFOS
+# Etendre à d'autres type de projections
+
+# Associate quantum numbers with sp3 type orbitals  
+
+# #Hydrogene AOS
+# s(θ,φ) = 1/√(4*pi)
+# pz(θ,φ) = √( 3/(4*π) )*cos(θ)
+# px(θ,φ) = √( 3/(4*π) )*sin(θ)*cos(φ)
+# py(θ,φ) = √( 3/(4*π) )*sin(θ)*sin(φ) 
+
+# angular_parts = Dict()
+# push!(angular_parts, [-3,1] => (θ,φ) -> 0.5*(s(θ,φ)+px(θ,φ)+py(θ,φ)+pz(θ,φ)) )  #sp3-1
+# push!(angular_parts, [-3,2] => (θ,φ) -> 0.5*(s(θ,φ)+px(θ,φ)-py(θ,φ)-pz(θ,φ)) )  #sp3-2
+# push!(angular_parts, [-3,3] => (θ,φ) -> 0.5*(s(θ,φ)-px(θ,φ)+py(θ,φ)-pz(θ,φ)) )  #sp3-3
+# push!(angular_parts, [-3,4] => (θ,φ) -> 0.5*(s(θ,φ)-px(θ,φ)-py(θ,φ)+pz(θ,φ)) )  #sp3-4
+
+# radial_parts = Dict()
+# push!(radial_parts, 1 => (r,α) -> 2*α^(3/2)*exp(-α*r) ) 
+# push!(radial_parts, 2 => (r,α) -> (1/(2*√2)) * α^(3/2) * (2-α*r) * exp(-α*r/2) )
+# push!(radial_parts, 3 => (r,α) -> √(4/27) * α^(3/2) * (1-2*α*r/3+2*(α^2)*(r^2)/27) * exp(-α*r/3) ) 
+
+
+# function generate_guess(proj,dic_R,dic_Θ)
+#     ############### BEGIN DOC
+#     #
+#     # Produces one guess function : takes  one line of the projections table
+#     # given by ~read_nnkp_file~ and  dictionaries linking  quantum numbers
+#     # and angular (Θ) or radial parts (R) of hydrogene AOs. 
+#     #
+#     # Recall that : proj = [ [center], [quantum numbers], [z_axis], [x_axis], α ]
+#     #
+#     # Ne pas confondre Θ majuscule et θ minuscule...
+#     ############### END_DOC
+
+#     center = proj[1]
+#     l,mr,r = proj[2]
+#     α = proj[5]
+
+#     #TODO take into account non-canonical basis
+#     @assert(proj[3] == [0.00,0.00,1.00]) #For now we limit ourselves to the canonical basis
+#     @assert(proj[4] == [1.00,0.00,0.00])
+
+#     #Choose radial and angular parts
+#     radial_part = get!(dic_R,r,1)
+#     angular_part = get!(dic_Θ, [l,mr],1)
+    
+#     function g_n(r,θ,φ)
+#         radial_part(r)*angular_part(θ,φ)
+#     end
+
+#     g_n
+    
+# end
+
+
+
+
+
+
+
+
+######!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!######
+###!!!!!!! !! !! !  !                                      !  ! !! !! !!!!!!!###
+##!!! !! !  !                      BACKUP SCF                      !  ! !! !!!##
+###!!!!!!! !! !! !  !                                      !  ! !! !! !!!!!!!###
+######!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!######
 
 # a = 10.26
 
