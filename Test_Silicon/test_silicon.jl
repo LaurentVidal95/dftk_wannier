@@ -2,7 +2,7 @@ using DFTK
 using ProgressMeter
 using LinearAlgebra
 
-include("../Generate_Mmn.jl")
+include("../dftk_to_wannier90.jl")
 
 ########################################################
 #                                                      #
@@ -30,7 +30,7 @@ basis = PlaneWaveBasis(model, Ecut; optimize_fft_size = true, kgrid=kgrid, use_s
 
 
 #Uncomment for the first compilation. Time consuming.
-scfres = self_consistent_field(basis, tol=1e-12, n_bands = 4, n_ep_extra = 0 );
+# scfres = self_consistent_field(basis, tol=1e-12, n_bands = 4, n_ep_extra = 0 );
 
 ψ = scfres.ψ
 num_bands = size(scfres.ψ[1][1,:],1)
