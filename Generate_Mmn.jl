@@ -1,7 +1,7 @@
 using DFTK            #used for gaussian_superposition function
 using ProgressMeter
 using LinearAlgebra
-
+using Dates
 
 ######!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!######
 ###!!!!!!! !! !! !  !                                      !  ! !! !! !!!!!!!###
@@ -10,7 +10,7 @@ using LinearAlgebra
 ######!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!######
 
 
-@views function read_nnkp_file(prefix,ψ)
+function read_nnkp_file(prefix,ψ)
 
     ############ #### #  #             Read file              #  # #### ############
     
@@ -54,14 +54,45 @@ using LinearAlgebra
     
 end
 
-  
+
+
+
+######!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!######
+###!!!!!!! !! !! !  !                                      !  ! !! !! !!!!!!!###
+##!!! !! !  !                         EIG                          !  ! !! !!!##
+###!!!!!!! !! !! !  !                                      !  ! !! !! !!!!!!!###
+######!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!######
+
+
+function generate_eig_file(prefix,scf_res)
+    #energies have to be in EV
+    Ha_to_Ev = 27.2114
+
+    eigvalues = scf_res.eigenvalues
+    eigvalues .*= Ha_to_Ev
+    k_size = size(eigvalues,1)
+    n_bands = size(eigvalues[1],1)
+
+    #write file
+    open("$prefix.eig","w") do f
+        for k in 1:k_size
+            for n in 1:n_bands
+                write(f,"  $n  $k  $(eigvalues[k][n])"*"\n")
+            end
+        end
+    end
+    
+end
+
+
+
 ######!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!######
 ###!!!!!!! !! !! !  !                                      !  ! !! !! !!!!!!!###
 ##!!! !! !  !                         Mmn                          !  ! !! !!!##
 ###!!!!!!! !! !! !  !                                      !  ! !! !! !!!!!!!###
 ######!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!######
 
-@views function get_overlap(k,kpb,ψ,pw_basis; K_shift = [0,0,0])
+function get_overlap(k,kpb,n_bands,ψ,pw_basis; K_shift = [0,0,0])
     
     ###################### DOC
     #
@@ -116,14 +147,14 @@ end
 
 
 
-@views function generate_mmn_file(prefix,ψ,pw_basis)
+function generate_mmn_file(prefix,ψ,pw_basis)
     #Parameters
-    n_bands = size(ψ[1])[2]
-    k_size = only(size(ψ))
+    n_bands = size(ψ[1],2)
+    k_size = length(ψ)
     
     #FIRST READ THE NNKP FILE
     # Generate the Mmn file from the nnkp file provided by wannier90 preprocessing.
-    nn_kpts = read_nnkp_file(prefix,ψ)
+    nn_kpts,tab_guesses = read_nnkp_file(prefix,ψ)
     progress = Progress(only(size(nn_kpts)),desc = "Computing Mmn overlaps : ")
     #Small function for the sake of clarity
     read_nn_kpts(n) = nn_kpts[n][1],nn_kpts[n][2],nn_kpts[n][3:end]
@@ -138,15 +169,17 @@ end
             k,nnk,shift = read_nn_kpts(i_nnkp)
             write(f,string(k)*"  "*string(nnk)*"  "*string(shift[1])*"  "*string(shift[2])*"  "*string(shift[3])*"\n")   
             #Overlaps
-            Mkb = get_overlap(k,nnk,ψ,pw_basis; K_shift = shift)
+            Mkb = get_overlap(k,nnk,n_bands,ψ,pw_basis; K_shift = shift)
             for i in 1:n_bands*n_bands
-                write(f, string(M[i,1])*" "*string(M[i,2])*"\n")
+                write(f, string(Mkb[i,1])*" "*string(Mkb[i,2])*"\n")
             end
             next!(progress)
         end
     end
 
 end
+
+
 
 
 
@@ -163,11 +196,86 @@ end
 ###!!!!!!! !! !! !  !                                      !  ! !! !! !!!!!!!###
 
 
+function index_fourier_modes(pw_basis,k,fft_grid)
+    
+    # BEGIN_DOC
+    # Provide the indices of fourier modes for a given k in the FFT_grid
+    # Recall that this map is the same for all bands, with k fixed.
+    # END_DOC
+    
+    map = []
+    for G in G_vectors(pw_basis.kpoints[k])
+        iG = only( findall(x -> x==G, fft_grid) )
+        push!(map,iG)
+    end
+    map
+    
+end
 
 
+function compute_amn_k_gaussians(pw_basis,ψ,k,centers)
+
+    ##!!!!!!!!!! !!!! !  !         Before calculation         !  ! !!!! !!!!!!!!!!##
+    guess_fourier(center) = xi ->  exp(-im*dot(xi,center) - dot(xi,xi)/4)   #BUG POSSIBLE INVERSER xi et center
+    n_bands = only( size(ψ[1][1,:]) )
+    n_guess = only( size(centers) )
+
+    
+    #Select concerned G vectors in the fft grid for given j
+    fft_grid = [G for (iG,G) in enumerate(G_vectors(pw_basis)) ]    #FFT grid in recip lattice coordinates
+    G_cart =[ pw_basis.model.recip_lattice * G for G in fft_grid ]  #FFT grid in cartesian coordinates
+    index = index_fourier_modes(pw_basis,k,fft_grid)                #modes shared by guesses and wave-fonction at frequency k
+
+    #Initialize output
+    A_k = zeros(Complex,(n_bands,n_guess))
+
+    
+    ##!!!!!!!!!! !!!! !  !            Compute A_k             !  ! !!!! !!!!!!!!!!##
+    for n in 1:n_guess
+        
+        fourier_gn = guess_fourier(centers[n])
+        norm_gn = norm([fourier_gn(G) for G in G_cart],2)                             # functions are l^2 normalized in Fourier, in DFTK conventions.
+        coeffs_gn = [ fourier_gn(G_cart[iG]) for iG in index ]  ./ norm_gn            # Coeffs of gn for frequencies in common with ψm
+        
+        for m in 1:n_bands
+            coeffs_ψm = ψ[k][:,m]
+            A_k[m,n] = dot(coeffs_ψm,coeffs_gn)                                    #The first argument is conjugated with the Julia "dot" function
+        end
+        
+    end
+
+    A_k
+end
 
 
+function generate_amn_file(prefix,ψ,pw_basis)
+    #parameters
+    n_bands = size(ψ[1],2)
+    k_size = length(ψ)
 
+    progress = Progress(k_size,desc = "Computing Amn overlaps : ")
+    
+
+    #centers of the gaussian guesses for silicon
+    centers = [[-0.125,-0.125, 0.375], [0.375,-0.125,-0.125], [-0.125, 0.375,-0.125], [-0.125,-0.125,-0.125]]
+
+    #write file
+    open("$prefix.amn","w") do f
+        write(f,"Generated by DFTK at ",string(now()),"\n")
+        write(f,string(n_bands)*"   "*string(k_size)*"   "*string(n_bands)*"\n") #TODO num_wan pour le dernier
+        for k in 1:k_size
+            A_k = compute_amn_k_gaussians(pw_basis,ψ,k,centers)
+            for m in 1:size(A_k,1)
+                for n in 1:size(A_k,2)
+                    write(f,"$m  $n  $k  $(real(A_k[m,n]))  $(imag(A_k[m,n]))"*"\n")
+                end
+            end
+            next!(progress)
+        end
+         
+    end         
+
+end
 
 
 
@@ -238,27 +346,3 @@ end
 
 
 
-
-######!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!######
-###!!!!!!! !! !! !  !                                      !  ! !! !! !!!!!!!###
-##!!! !! !  !                      BACKUP SCF                      !  ! !! !!!##
-###!!!!!!! !! !! !  !                                      !  ! !! !! !!!!!!!###
-######!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!######
-
-# a = 10.26
-
-# # Note that vectors are stored in rows
-# lattice = a / 2*[[-1.  0. -1.];
-#                  [ 0   1.  1.];
-#                  [ 1   1.  0.]]
-
-# Si = ElementPsp(:Si, psp=load_psp("hgh/pbe/Si-q4"))
-
-# atoms = [ Si => [zeros(3), 0.25*[-1,3,-1]] ]
-
-# model = model_PBE(lattice,atoms)
-# kgrid = [4,4,4] #Ligne "mp_grid"
-# Ecut = 20.0
-# basis = PlaneWaveBasis(model, Ecut; optimize_fft_size = true, kgrid=kgrid, use_symmetry=false)
-
-# scfres = self_consistent_field(basis, tol=1e-12, n_bands = 4, n_ep_extra = 0 );
