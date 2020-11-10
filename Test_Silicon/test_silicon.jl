@@ -12,10 +12,10 @@ include("../dftk_to_wannier90.jl")
 
 #TEST FOR SILICON
 
-a = 10.26
+a = 10.26 #a.u.
 
 # Note that vectors are stored in rows
-lattice = a / 2*[[-1.  0. -1.];
+lattice = a / 2*[[-1.  0. -1.];   #basis.model.lattice (in a.u.)
                  [ 0   1.  1.];
                  [ 1   1.  0.]]
 
@@ -26,14 +26,16 @@ atoms = [ Si => [zeros(3), 0.25*[-1,3,-1]] ]
 model = model_PBE(lattice,atoms)
 kgrid = [4,4,4] # mp grid
 Ecut = 20.0
-basis = PlaneWaveBasis(model, Ecut; optimize_fft_size = true, kgrid=kgrid, use_symmetry=false)
+#for optimal fft add 
+# optimize_fft_size = true
+basis = PlaneWaveBasis(model, Ecut; kgrid=kgrid, use_symmetry = false)
 
 
 #Uncomment for the first compilation. Time consuming.
 # scfres = self_consistent_field(basis, tol=1e-12, n_bands = 4, n_ep_extra = 0 );
 
 ψ = scfres.ψ
-num_bands = size(scfres.ψ[1][1,:],1)
+num_bands = size(scfres.ψ[1][1,:],1);
 
 
 
