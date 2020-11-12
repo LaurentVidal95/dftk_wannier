@@ -1,1 +1,1 @@
-# dftk_wannier
+# DFTK -> Wannier90
